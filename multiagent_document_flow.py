@@ -12,6 +12,7 @@ class HealthcareState(BaseModel):
     patient_id: str = ""
     document_type: str = ""
     final_output: dict = Field(default_factory=dict)
+    related_documents: list = Field(default_factory=list)
 
 def create_healthcare_workflow(model_config: ModelConfig = None):
     """Create a healthcare workflow with the specified model configuration."""
@@ -53,7 +54,7 @@ def create_healthcare_workflow(model_config: ModelConfig = None):
                     "document_type": next_agent.split("_")[0]}
         )
 
-    def document_agent(state: HealthcareState) -> Command[Literal["finalize_output"]]:
+    def document_agent(state: HealthcareState) -> Command[Literal["document_relationship_agent"]]:
         """Agent specialized in document processing."""
         document_prompt = SystemMessage(content="""
         You are a healthcare document specialist. Process the patient's document requests and provide
@@ -73,10 +74,53 @@ def create_healthcare_workflow(model_config: ModelConfig = None):
         }
         
         return Command(
-            goto="finalize_output",
+            goto="document_relationship_agent",
             update={
                 "messages": state.messages + [current_task, response],
                 "final_output": document_output
+            }
+        )
+
+    def document_relationship_agent(state: HealthcareState) -> Command[Literal["finalize_output"]]:
+        """Agent that checks for relationships between documents in the database."""
+        relationship_prompt = SystemMessage(content="""
+        You are a healthcare document relationship specialist. Analyze the current document and
+        check for any relationships with other documents in the patient's history. Look for
+        dependencies, references, or related documentation that might be relevant.
+        """)
+        
+        # Placeholder for database retrieval
+        def retrieve_stored_data(patient_id: str) -> list:
+            """Placeholder function for retrieving data from Supabase database."""
+            # In a real implementation, this would query Supabase
+            return [
+                {"id": "doc-123", "type": "prescription", "date": "2024-01-01"},
+                {"id": "doc-456", "type": "lab_result", "date": "2024-01-15"}
+            ]
+        
+        # Retrieve related documents
+        related_docs = retrieve_stored_data(state.patient_id)
+        
+        current_task = HumanMessage(content=f"""
+        Analyze relationships for Patient ID: {state.patient_id}
+        Current document: {state.final_output}
+        Related documents: {related_docs}
+        """)
+        
+        response = model.invoke([relationship_prompt] + state.messages + [current_task])
+        
+        relationship_output = {
+            **state.final_output,
+            "related_documents": related_docs,
+            "relationship_analysis": response.content
+        }
+        
+        return Command(
+            goto="finalize_output",
+            update={
+                "messages": state.messages + [current_task, response],
+                "final_output": relationship_output,
+                "related_documents": related_docs
             }
         )
 
@@ -162,12 +206,17 @@ def create_healthcare_workflow(model_config: ModelConfig = None):
     # Add all our nodes
     workflow_builder.add_node("router", router)
     workflow_builder.add_node("document_agent", document_agent)
+    workflow_builder.add_node("document_relationship_agent", document_relationship_agent)
     workflow_builder.add_node("medicine_agent", medicine_agent)
     workflow_builder.add_node("medical_gadget_agent", medical_gadget_agent)
     workflow_builder.add_node("finalize_output", finalize_output_node)
     
     # Define the edges
     workflow_builder.add_edge(START, "router")
+    workflow_builder.add_edge("document_agent", "document_relationship_agent")
+    workflow_builder.add_edge("document_relationship_agent", "finalize_output")
+    workflow_builder.add_edge("medicine_agent", "finalize_output")
+    workflow_builder.add_edge("medical_gadget_agent", "finalize_output")
     workflow_builder.add_edge("finalize_output", END)
     
     # Compile the graph
@@ -188,23 +237,29 @@ if __name__ == "__main__":
     openai_config = ModelConfig(
         provider=ModelProvider.OPENAI,
         model_name="gpt-4-turbo",
-        temperature=0.7
+        temperature=0.0
     )
     
     mistral_config = ModelConfig(
         provider=ModelProvider.MISTRAL,
         model_name="mistral-large-latest",
-        temperature=0.7
+        temperature=0.0
     )
     
-    # Process a request using OpenAI
-    openai_result = process_patient_request("P12345", openai_config)
-    print(f"OpenAI Result: {openai_result}")
+    google_config = ModelConfig(
+        provider=ModelProvider.GOOGLE,
+        model_name="gemini-2.0-flash",
+        temperature=0.0
+    )
+    
+    # # Process a request using OpenAI
+    # openai_result = process_patient_request("P12345", openai_config)
+    # print(f"OpenAI Result: {openai_result}")
     
     # Process a request using Mistral
-    mistral_result = process_patient_request("P12345", mistral_config)
+    mistral_result = process_patient_request("P12345", google_config)
     print(f"Mistral Result: {mistral_result}")
     
-    # Process a request using default model (OpenAI)
-    default_result = process_patient_request("P12345")
-    print(f"Default Result: {default_result}")
+    # # Process a request using default model (OpenAI)
+    # default_result = process_patient_request("P12345")
+    # print(f"Default Result: {default_result}")
